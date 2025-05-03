@@ -12,6 +12,13 @@ from app.vision import init_predictor
 import pickle
 import torch
 
+from doctr.io import DocumentFile
+from tempfile import TemporaryDirectory
+from ocrmypdf.hocrtransform import HocrTransform
+from PIL import Image
+import os
+from PyPDF2 import PdfMerger
+
 router = APIRouter()
 
 
@@ -27,55 +34,41 @@ async def perform_ocr(request: OCRIn = Depends(), files: list[UploadFile] = [Fil
 
     out = predictor(content)
 
-#    results = [
-#        OCROut(
-#            name=filenames[i],
-#            orientation=page.orientation,
-#            language=page.language,
-#            dimensions=page.dimensions,
-#            items=[
-#                OCRPage(
-#                    blocks=[
-#                        OCRBlock(
-#                            geometry=resolve_geometry(block.geometry),
-#                            objectness_score=round(block.objectness_score, 2),
-#                            lines=[
-#                                OCRLine(
-#                                    geometry=resolve_geometry(line.geometry),
-#                                    objectness_score=round(line.objectness_score, 2),
-#                                    words=[
-#                                        OCRWord(
-#                                            value=word.value,
-#                                            geometry=resolve_geometry(word.geometry),
-#                                            objectness_score=round(word.objectness_score, 2),
-#                                            confidence=round(word.confidence, 2),
-#                                            crop_orientation=word.crop_orientation,
-#                                        )
-#                                        for word in line.words
-#                                    ],
-#                                )
-#                                for line in block.lines
-#                            ],
-#                        )
-#                        for block in page.blocks
-#                    ]
-#                )
-#            ],
-#        )
-#        for i, page in enumerate(out.pages)
-#    ]
-#
-#    return results
-
-    # This returns a list of tuples (filename, page) that OCRmyPDF can use to apply hOCR to a PDF
-    # Each page contains a list of blocks, each block contains a list of lines
-    # Each line contains a list of words
-    # Each word contains a value, geometry, objectness_score, confidence, and crop_orientation
-    # Below we're exporting the results as hOCR, serializing it into binary bytes that the caller can
-    # consume to apply hOCR to a PDF
-    hOCR_list = out.export_as_xml()
-    hOCR_serial = pickle.dumps(hOCR_list)
+    xml_outputs = out.export_as_xml()
     # Empty the CUDA cache to free up memory
     # This is important because the model is loaded in GPU memory and we need to free it up for other apps
     torch.cuda.empty_cache()
-    return Response(content=hOCR_serial, media_type="application/octet-stream")
+    await files[0].seek(0)
+    file_bytes = await files[0].read()
+    docs = DocumentFile.from_pdf(file_bytes)
+    pdf_paths = []
+
+    with TemporaryDirectory() as tmpdir:
+        for i, (xml, img) in enumerate(zip(xml_outputs, docs)):
+            img_path = os.path.join(tmpdir, f"{i}.jpg")
+            xml_path = os.path.join(tmpdir, f"{i}.xml")
+            pdf_path = os.path.join(tmpdir, f"{i}.pdf")
+
+            Image.fromarray(img).save(img_path)
+
+            with open(xml_path, "w") as f:
+                f.write(xml[0].decode())
+
+            hocr = HocrTransform(hocr_filename=xml_path, dpi=300)
+            hocr.to_pdf(out_filename=pdf_path, image_filename=img_path)
+
+            pdf_paths.append(pdf_path)
+
+        # Merge all PDFs into one
+        merged_pdf_path = os.path.join(tmpdir, "merged.pdf")
+        merger = PdfMerger()
+        for pdf in sorted(pdf_paths):  # Ensure consistent page order
+            merger.append(pdf)
+        merger.write(merged_pdf_path)
+        merger.close()
+
+        # Read and return the merged PDF
+        with open(merged_pdf_path, "rb") as f:
+            merged_bytes = f.read()
+
+        return Response(content=merged_bytes, media_type="application/pdf")
