@@ -38,7 +38,9 @@ async def get_documents(files: list[UploadFile]) -> tuple[list[np.ndarray], list
             docs.extend(DocumentFile.from_images([await file.read()]))
             filenames.append(file.filename or "")
         elif mime_type == "application/pdf":
-            pdf_content = DocumentFile.from_pdf(await file.read())
+            dpi = 300
+            scale = dpi / 72.0
+            pdf_content = DocumentFile.from_pdf(await file.read(), scale=scale)
             docs.extend(pdf_content)
             filenames.extend([file.filename] * len(pdf_content) or [""] * len(pdf_content))
         else:
