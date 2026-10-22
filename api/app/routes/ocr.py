@@ -64,7 +64,9 @@ async def perform_ocr(request: OCRIn = Depends(), files: list[UploadFile] = [Fil
         # Merge all PDFs into one
         merged_pdf_path = os.path.join(tmpdir, "merged.pdf")
         merger = PdfMerger()
-        for pdf in sorted(pdf_paths):  # Ensure consistent page order
+        # pdf_paths is already in page order. Sorting it would compare the
+        # names as text and put 10.pdf before 2.pdf.
+        for pdf in pdf_paths:
             merger.append(pdf)
         merger.write(merged_pdf_path)
         merger.close()
